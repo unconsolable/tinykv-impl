@@ -18,6 +18,7 @@ import (
 	"errors"
 	"log"
 	"math/rand"
+	"time"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -162,6 +163,8 @@ type Raft struct {
 
 	// Peers id
 	peers []uint64
+	// half election timeout, used for reset electionElapsed
+	halfElectionTimeout int
 }
 
 // newRaft return a raft peer with the given config
@@ -177,13 +180,14 @@ func newRaft(c *Config) *Raft {
 	}
 	// Init Raft state
 	ret := &Raft{
-		id:               c.ID,
-		electionTimeout:  2 * c.ElectionTick,
-		heartbeatTimeout: c.HeartbeatTick,
-		Term:             hardState.Term,
-		Vote:             hardState.Vote,
-		State:            StateFollower,
-		peers:            c.peers,
+		id:                  c.ID,
+		electionTimeout:     2 * c.ElectionTick,
+		heartbeatTimeout:    c.HeartbeatTick,
+		Term:                hardState.Term,
+		Vote:                hardState.Vote,
+		State:               StateFollower,
+		peers:               c.peers,
+		halfElectionTimeout: c.ElectionTick,
 	}
 	// Recover RaftLog
 	ret.RaftLog = newLog(c.Storage)
@@ -191,6 +195,8 @@ func newRaft(c *Config) *Raft {
 	ret.RaftLog.applied = c.Applied
 	// Switch to follower
 	ret.becomeFollower(0, None)
+	// Set random seed
+	rand.Seed(time.Now().UnixNano())
 	return ret
 }
 
@@ -267,7 +273,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Term = term
 	r.Lead = lead
 	r.Vote = 0
-	r.electionElapsed = rand.Intn(r.electionTimeout / 2)
+	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// Switch state to follower
 	r.State = StateFollower
 	DPrintf("%d become Follower, term %v\n", r.id, r.Term)
@@ -279,7 +285,7 @@ func (r *Raft) becomeCandidate() {
 	// Update term, vote to itself, reset election timeout
 	r.Term++
 	r.Vote = r.id
-	r.electionElapsed = rand.Intn(r.electionTimeout / 2)
+	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// Reset votes
 	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true
@@ -482,7 +488,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 		DPrintf("%d grand vote to %d\n", r.id, m.From)
 		r.Vote = m.From
 		respMsg.Reject = false
-		r.electionElapsed = rand.Intn(r.electionTimeout / 2)
+		r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	}
 	r.msgs = append(r.msgs, respMsg)
 }
@@ -543,7 +549,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	respMsg.Term = r.Term
 	// Reset election timer
-	r.electionElapsed = rand.Intn(r.electionTimeout / 2)
+	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// ---------------------------
 	// TODO: compare and append
 	// ---------------------------
@@ -585,7 +591,7 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 	}
 	respMsg.Term = r.Term
 	// Reset election timer
-	r.electionElapsed = rand.Intn(r.electionTimeout / 2)
+	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// If leaderCommit > commitIndex,
 	// set commitIndex = min(leaderCommit, index of last *new* entry)
 	if m.Commit > r.RaftLog.committed {
