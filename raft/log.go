@@ -14,7 +14,11 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	"log"
+
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,13 +54,16 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	// Index and term before the first entry
+	firstLogIdx  uint64
+	firstLogTerm uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	ret := &RaftLog{storage: storage, entries: make([]pb.Entry, 1)}
+	ret := &RaftLog{storage: storage, entries: make([]pb.Entry, 0)}
 	// Get the first and last index of previous entries
 	firstIndex, err := storage.FirstIndex()
 	if err != nil {
@@ -72,10 +79,7 @@ func newLog(storage Storage) *RaftLog {
 		panic(err.Error())
 	}
 	ret.entries = append(ret.entries, prevEntries...)
-	// Change the index of dummy entry if needed
-	if len(prevEntries) != 0 {
-		ret.entries[0].Index = ret.entries[1].Index - 1
-	}
+	// First log idx and term will be zero before snapshot is introduced
 	return ret
 }
 
@@ -89,24 +93,41 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled+1:]
+	if len(l.entries) == 0 {
+		return nil
+	}
+	offset := l.entries[0].Index
+	return l.entries[l.stabled-offset+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied+1 : l.committed+1]
+	if len(l.entries) == 0 {
+		return nil
+	}
+	offset := l.entries[0].Index
+	return l.entries[l.applied-offset+1 : l.committed-offset+1]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
+	if len(l.entries) == 0 {
+		return l.firstLogIdx
+	}
 	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
+// or firstLogTerm if i == firstLogIdx
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
+	if i == l.firstLogIdx {
+		return l.firstLogTerm, nil
+	} else if len(l.entries) == 0 {
+		return 0, ErrUnavailable
+	}
 	offset := l.entries[0].Index
 	if i < offset {
 		return 0, ErrCompacted
@@ -115,4 +136,99 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 		return 0, ErrUnavailable
 	}
 	return l.entries[i-offset].Term, nil
+}
+
+// Entries returns a slice of log entries in the range [lo, hi)
+func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
+	offset := l.entries[0].Index
+	if lo < offset {
+		return nil, ErrCompacted
+	}
+	if hi > l.LastIndex()+1 {
+		log.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, l.LastIndex())
+	}
+	ents := l.entries[lo-offset : hi-offset]
+	ret := make([]*pb.Entry, len(ents))
+	for i := range ents {
+		ret[i] = &ents[i]
+	}
+	return ret, nil
+}
+
+// Log entry append for leader
+func (l *RaftLog) LeaderAppend(data []byte, term uint64) error {
+	lastIndex := l.LastIndex()
+	l.entries = append(l.entries, pb.Entry{
+		EntryType: pb.EntryType_EntryNormal,
+		Term:      term,
+		Index:     lastIndex + 1,
+		Data:      data,
+	})
+	return nil
+}
+
+// Log entry append for non-leader, return true if rejected
+func (l *RaftLog) NonLeaderAppend(m pb.Message) (bool, error) {
+	// m.Entries before firstLogIdx, cut to the same
+	if m.Index < l.firstLogIdx {
+		m.Index = l.firstLogIdx
+		m.LogTerm = l.firstLogTerm
+		i := 0
+		for ; i < len(m.Entries); i++ {
+			if m.Entries[i].Index == m.Index {
+				if m.Entries[i].Term != m.LogTerm {
+					panic("m.Entries[i].Term != m.Term")
+				}
+				i++
+				break
+			}
+		}
+		m.Entries = m.Entries[i:]
+	}
+	// Reject and REPLY false if log does not contain an entry
+	// at prevLogIndex whose Term matches prevLogTerm
+	prevIdxTerm, err := l.Term(m.Index)
+	if err != nil && err != ErrUnavailable {
+		panic(err.Error())
+	}
+	if m.Index > l.LastIndex() || prevIdxTerm != m.LogTerm {
+		// ---------------------------
+		// TODO: fast roll back
+		// ---------------------------
+		DPrintf("Reject AE: %v %v %v %v", prevIdxTerm, m.LogTerm, m.Index, l.LastIndex())
+		return true, nil
+	}
+	// If an existing entry conflicts with a new one (same index
+	// but different terms), delete the existing entry and all that follow it
+	i, first, last, lenMsgEnts := uint64(0), m.Index+1, l.LastIndex(), uint64(len(m.Entries))
+	DPrintf("i=%v, first=%v, last=%v, lenMsgEnts=%v\n", i, first, last, lenMsgEnts)
+	if len(l.entries) > 0 {
+		offset := l.entries[0].Index
+		for ; i < lenMsgEnts && i+first <= last; i++ {
+			logTerm, err := l.Term(i + first)
+			if err != nil {
+				panic(err.Error())
+			}
+			if m.Entries[i].Index != i+first {
+				panic("m.Entries[i].Index != i+first")
+			}
+			if m.Entries[i].Term != logTerm {
+				l.entries = l.entries[:i+first-offset]
+				break
+			}
+		}
+	}
+	// If a follower receives an AppendEntries request that includes log entries
+	// already present in its log, it ignores those entries in the new request.
+	m.Entries = m.Entries[i:]
+	// Update stabled index, then append
+	if storLastIdx, err := l.storage.LastIndex(); err != nil {
+		panic(err.Error())
+	} else {
+		l.stabled = min(l.LastIndex(), storLastIdx)
+	}
+	for _, ent := range m.Entries {
+		l.entries = append(l.entries, *ent)
+	}
+	return false, nil
 }
