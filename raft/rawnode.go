@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"reflect"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -70,12 +71,19 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	prevHardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	ret := &RawNode{Raft: newRaft(config)}
+	ret.prevHardState = pb.HardState{
+		Term:   ret.Raft.Term,
+		Vote:   ret.Raft.Vote,
+		Commit: ret.Raft.RaftLog.committed,
+	}
+	return ret, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,12 +151,32 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	// TODO: snapshot (2C)
+	ret := Ready{
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages:         rn.Raft.msgs,
+	}
+	if rn.HardStateChanged() {
+		ret.HardState = pb.HardState{
+			Term:   rn.Raft.Term,
+			Vote:   rn.Raft.Vote,
+			Commit: rn.Raft.RaftLog.committed,
+		}
+	}
+	return ret
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
+	if rn.HardStateChanged() {
+		return true
+	}
+	ents, nextEnts := rn.Raft.RaftLog.unstableEntries(), rn.Raft.RaftLog.nextEnts()
+	if len(ents) != 0 || len(nextEnts) != 0 {
+		return true
+	}
 	return false
 }
 
@@ -156,6 +184,19 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	if rd.Term > rn.prevHardState.Term {
+		rn.prevHardState.Term = rd.Term
+		rn.prevHardState.Vote = rd.Vote
+	}
+	if rd.Commit > rn.prevHardState.Commit {
+		rn.prevHardState.Commit = rd.Commit
+	}
+	if len(rd.Entries) != 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+	if len(rd.CommittedEntries) != 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
@@ -173,4 +214,13 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) HardStateChanged() bool {
+	newHardState := pb.HardState{
+		Term:   rn.prevHardState.Term,
+		Vote:   rn.prevHardState.Vote,
+		Commit: rn.prevHardState.Commit,
+	}
+	return !reflect.DeepEqual(rn.prevHardState, newHardState)
 }

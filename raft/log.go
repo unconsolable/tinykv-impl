@@ -79,6 +79,12 @@ func newLog(storage Storage) *RaftLog {
 		panic(err.Error())
 	}
 	ret.entries = append(ret.entries, prevEntries...)
+	// Get stabled index
+	if stabled, err := storage.LastIndex(); err != nil {
+		panic(err.Error())
+	} else {
+		ret.stabled = stabled
+	}
 	// First log idx and term will be zero before snapshot is introduced
 	return ret
 }
@@ -101,7 +107,7 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 }
 
 // nextEnts returns all the committed but not applied entries
-func (l *RaftLog) nextEnts() (ents []pb.Entry) {
+func (l *RaftLog) nextEnts() []pb.Entry {
 	// Your Code Here (2A).
 	if len(l.entries) == 0 {
 		return nil
