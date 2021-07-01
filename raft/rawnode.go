@@ -191,10 +191,10 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.Commit > rn.prevHardState.Commit {
 		rn.prevHardState.Commit = rd.Commit
 	}
-	if len(rd.Entries) != 0 {
+	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
-	if len(rd.CommittedEntries) != 0 {
+	if len(rd.CommittedEntries) != 0 && rn.Raft.RaftLog.applied < rd.CommittedEntries[len(rd.CommittedEntries)-1].Index {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 }
@@ -216,6 +216,7 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
 
+// Return true if current HardState is changed
 func (rn *RawNode) HardStateChanged() bool {
 	newHardState := pb.HardState{
 		Term:   rn.prevHardState.Term,
