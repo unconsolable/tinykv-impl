@@ -73,6 +73,12 @@ func newLog(storage Storage) *RaftLog {
 	if err != nil {
 		panic(err.Error())
 	}
+	ret.firstLogIdx = firstIndex - 1
+	if firstLogTerm, err := storage.Term(ret.firstLogIdx); err != nil {
+		panic(err.Error())
+	} else {
+		ret.firstLogTerm = firstLogTerm
+	}
 	// Fetch previous entries and append
 	prevEntries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
@@ -173,8 +179,7 @@ func (l *RaftLog) LeaderAppend(data []byte, term uint64) error {
 	return nil
 }
 
-// Log entry append for non-leader, return true if rejected
-func (l *RaftLog) NonLeaderAppend(m pb.Message) (bool, error) {
+func (l *RaftLog) NonLeaderCheck(m pb.Message) (bool, error) {
 	// m.Entries before firstLogIdx, cut to the same
 	if m.Index < l.firstLogIdx {
 		m.Index = l.firstLogIdx
@@ -201,13 +206,17 @@ func (l *RaftLog) NonLeaderAppend(m pb.Message) (bool, error) {
 		// ---------------------------
 		// TODO: fast roll back
 		// ---------------------------
-		DPrintf("Reject AE: %v %v %v %v", prevIdxTerm, m.LogTerm, m.Index, l.LastIndex())
+		// DPrintf("Reject AE: %v %v %v %v", prevIdxTerm, m.LogTerm, m.Index, l.LastIndex())
 		return true, nil
 	}
+	return false, nil
+}
+
+// Log entry append for non-leader, return true if rejected
+func (l *RaftLog) NonLeaderAppend(m pb.Message) {
 	// If an existing entry conflicts with a new one (same index
 	// but different terms), delete the existing entry and all that follow it
 	i, first, last, lenMsgEnts := uint64(0), m.Index+1, l.LastIndex(), uint64(len(m.Entries))
-	DPrintf("i=%v, first=%v, last=%v, lenMsgEnts=%v\n", i, first, last, lenMsgEnts)
 	if len(l.entries) > 0 {
 		offset := l.entries[0].Index
 		for ; i < lenMsgEnts && i+first <= last; i++ {
@@ -236,5 +245,4 @@ func (l *RaftLog) NonLeaderAppend(m pb.Message) (bool, error) {
 	for _, ent := range m.Entries {
 		l.entries = append(l.entries, *ent)
 	}
-	return false, nil
 }

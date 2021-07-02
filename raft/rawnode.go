@@ -164,6 +164,7 @@ func (rn *RawNode) Ready() Ready {
 			Commit: rn.Raft.RaftLog.committed,
 		}
 	}
+	rn.Raft.msgs = rn.Raft.msgs[:0]
 	return ret
 }
 
@@ -174,7 +175,7 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 	ents, nextEnts := rn.Raft.RaftLog.unstableEntries(), rn.Raft.RaftLog.nextEnts()
-	if len(ents) != 0 || len(nextEnts) != 0 {
+	if len(ents) != 0 || len(nextEnts) != 0 || len(rn.Raft.msgs) != 0 {
 		return true
 	}
 	return false
