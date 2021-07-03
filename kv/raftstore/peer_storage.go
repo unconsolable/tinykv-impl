@@ -371,7 +371,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB.Reset()
 	kvWB.Reset()
 	// Append log entries
-	var ents []eraftpb.Entry
+	ents := make([]eraftpb.Entry, len(ready.Entries))
 	copy(ents, ready.Entries)
 	if err := ps.Append(ents, &raftWB); err != nil {
 		return nil, err

@@ -400,6 +400,7 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgAppendResponse:
 		return nil
 	default:
 		log.Fatalf("Implement message %v in %v", m.MsgType, r.State.String())
@@ -468,6 +469,7 @@ func (r *Raft) appendEntry(m pb.Message) {
 	// With less than 2 nodes, leader itself can be majority
 	if len(r.Prs) < 2 {
 		r.updateCommitted()
+		return
 	}
 	r.bcastAppend()
 }

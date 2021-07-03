@@ -16,7 +16,6 @@ package raft
 
 import (
 	"errors"
-	"reflect"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -220,9 +219,9 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 // Return true if current HardState is changed
 func (rn *RawNode) HardStateChanged() bool {
 	newHardState := pb.HardState{
-		Term:   rn.prevHardState.Term,
-		Vote:   rn.prevHardState.Vote,
-		Commit: rn.prevHardState.Commit,
+		Term:   rn.Raft.Term,
+		Vote:   rn.Raft.Vote,
+		Commit: rn.Raft.RaftLog.committed,
 	}
-	return !reflect.DeepEqual(rn.prevHardState, newHardState)
+	return !isHardStateEqual(rn.prevHardState, newHardState)
 }

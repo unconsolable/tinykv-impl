@@ -9,6 +9,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/runner"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/snap"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
@@ -43,6 +44,98 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	// log.Infof("Into HandleRaftReady %v", d.peer.RaftGroup.Raft.GetId())
+	if !d.RaftGroup.HasReady() {
+		return
+	}
+	rd := d.RaftGroup.Ready()
+	// log.Infof("%v cur Ready %v", d.peer.RaftGroup.Raft.GetId(), rd)
+	// Apply log entries
+	kvApplyWB := engine_util.WriteBatch{}
+	for _, ent := range rd.CommittedEntries {
+		kvApplyWB.Reset()
+		if ent.Data == nil {
+			continue
+		}
+		req := new(raft_cmdpb.RaftCmdRequest)
+		if err := req.Unmarshal(ent.Data); err != nil {
+			panic(err.Error())
+		}
+		// Find callback, execute request and send response
+		var curProposal *proposal = nil
+		// Find callback
+		// In ManyPartitions, the index in proposals may not be consecutive
+		for _, prop := range d.proposals {
+			if ent.Index == prop.index {
+				curProposal = prop
+				break
+			}
+		}
+		// Reject stale callbacks
+		if err := util.CheckTerm(req, d.Term()); err != nil {
+			if curProposal != nil {
+				curProposal.cb.Done(ErrRespStaleCommand(d.Term()))
+			}
+		}
+		header := raft_cmdpb.RaftResponseHeader{
+			CurrentTerm: d.Term(),
+		}
+		resp := raft_cmdpb.RaftCmdResponse{
+			Header: &header,
+		}
+		needTxn, getOpErr := false, false
+		// Set WriteBatch
+		for _, v := range req.Requests {
+			switch v.CmdType {
+			case raft_cmdpb.CmdType_Put:
+				kvApplyWB.SetCF(v.Put.Cf, v.Put.Key, v.Put.Value)
+				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Put, Put: &raft_cmdpb.PutResponse{}})
+			case raft_cmdpb.CmdType_Delete:
+				kvApplyWB.DeleteCF(v.Delete.Cf, v.Delete.Key)
+				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Delete, Delete: &raft_cmdpb.DeleteResponse{}})
+			case raft_cmdpb.CmdType_Snap:
+				needTxn = true
+				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Snap, Snap: &raft_cmdpb.SnapResponse{Region: d.Region()}})
+			case raft_cmdpb.CmdType_Get:
+				val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, v.Get.Cf, v.Get.Key)
+				if err != nil {
+					getOpErr = true
+					if curProposal != nil {
+						curProposal.cb.Done(ErrResp(err))
+					}
+				}
+				resp.Responses = append(resp.Responses, &raft_cmdpb.Response{CmdType: raft_cmdpb.CmdType_Get, Get: &raft_cmdpb.GetResponse{Value: val}})
+			}
+		}
+		if getOpErr {
+			continue
+		}
+		// Apply to KvDB, get Txn handler
+		if err := kvApplyWB.WriteToDB(d.peerStorage.Engines.Kv); err != nil {
+			if curProposal != nil {
+				curProposal.cb.Done(ErrResp(err))
+			}
+			continue
+		}
+		if needTxn {
+			if curProposal != nil {
+				curProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+			}
+		}
+		if curProposal != nil {
+			curProposal.cb.Done(&resp)
+		}
+		d.peerStorage.applyState.AppliedIndex = ent.Index
+	}
+	// log.Infof("Apply Ok %v", d.peer.RaftGroup.Raft.GetId())
+	// Save Log Entries, RaftLocalState, RaftApplyState, RegionLocalState
+	d.peerStorage.SaveReadyState(&rd)
+	// log.Infof("Persist Ok %v", d.peer.RaftGroup.Raft.GetId())
+	// Send Raft messages
+	d.Send(d.ctx.trans, rd.Messages)
+	// Advance raftFsm
+	d.RaftGroup.Advance(rd)
+	// log.Infof("Send Ok %v", d.peer.RaftGroup.Raft.GetId())
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +207,16 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	data, err := msg.Marshal()
+	if err != nil {
+		panic(err.Error())
+	}
+	d.proposals = append(d.proposals, &proposal{
+		index: d.nextProposalIndex(),
+		term:  msg.Header.Term,
+		cb:    cb,
+	})
+	d.RaftGroup.Propose(data)
 }
 
 func (d *peerMsgHandler) onTick() {
