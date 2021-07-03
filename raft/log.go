@@ -179,7 +179,7 @@ func (l *RaftLog) LeaderAppend(data []byte, term uint64) error {
 	return nil
 }
 
-func (l *RaftLog) NonLeaderCheck(m pb.Message) (bool, error) {
+func (l *RaftLog) NonLeaderCheck(m pb.Message) (bool, error, *pb.AppendRejectHint) {
 	// m.Entries before firstLogIdx, cut to the same
 	if m.Index < l.firstLogIdx {
 		m.Index = l.firstLogIdx
@@ -202,14 +202,33 @@ func (l *RaftLog) NonLeaderCheck(m pb.Message) (bool, error) {
 	if err != nil && err != ErrUnavailable {
 		panic(err.Error())
 	}
-	if m.Index > l.LastIndex() || prevIdxTerm != m.LogTerm {
-		// ---------------------------
-		// TODO: fast roll back
-		// ---------------------------
-		// DPrintf("Reject AE: %v %v %v %v", prevIdxTerm, m.LogTerm, m.Index, l.LastIndex())
-		return true, nil
+	if m.Index > l.LastIndex() {
+		hint := &pb.AppendRejectHint{
+			XLen:     l.LastIndex() + 1,
+			XTerm:    0,
+			XIndex:   0,
+			HasXTerm: false,
+		}
+		return true, nil, hint
 	}
-	return false, nil
+	if prevIdxTerm != m.LogTerm {
+		index, last := l.firstLogIdx, l.LastIndex()
+		for ; index <= last; index++ {
+			if term, err := l.Term(index); err != nil {
+				panic(err.Error())
+			} else if term == prevIdxTerm {
+				break
+			}
+		}
+		hint := &pb.AppendRejectHint{
+			XLen:     l.LastIndex() + 1,
+			XTerm:    prevIdxTerm,
+			XIndex:   index,
+			HasXTerm: true,
+		}
+		return true, nil, hint
+	}
+	return false, nil, nil
 }
 
 // Log entry append for non-leader, return true if rejected

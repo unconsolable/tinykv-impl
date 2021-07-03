@@ -1,0 +1,11 @@
+go test -run ^TestBasic2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestConcurrent2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestUnreliable2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestOnePartition2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestManyPartitionsOneClient2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestManyPartitionsManyClients2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestPersistOneClient2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestPersistConcurrent2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestPersistConcurrentUnreliable2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestPersistPartition2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -run ^TestPersistPartitionUnreliable2B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore

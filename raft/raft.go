@@ -599,11 +599,12 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Reset election timer
 	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// Check log entries
-	if rejected, err := r.RaftLog.NonLeaderCheck(m); err != nil {
+	if rejected, err, hint := r.RaftLog.NonLeaderCheck(m); err != nil {
 		panic(err.Error())
 	} else {
 		respMsg.Reject = rejected
 		if rejected {
+			respMsg.Hint = hint
 			return
 		}
 	}
@@ -624,18 +625,36 @@ func (r *Raft) handleAppendEntriesResp(m pb.Message) {
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, None)
 		} else {
-			// ---------------------------
-			// TODO: fast roll back
-			// ---------------------------
-			r.Prs[m.From].Next--
+			if m.Hint.HasXTerm {
+				// leader doesn't have XTerm: nextIndex = XIndex
+				// leader has XTerm: nextIndex = leader's last entry for XTerm
+				next := r.Prs[m.From].Next - 1
+				for ; next > r.RaftLog.firstLogIdx; next-- {
+					if term, err := r.RaftLog.Term(next); err != nil {
+						panic(err.Error())
+					} else if term <= m.Hint.XTerm {
+						break
+					}
+				}
+				if term, _ := r.RaftLog.Term(next); next != r.RaftLog.firstLogIdx && term == m.Hint.XTerm {
+					r.Prs[m.From].Next = next
+				} else {
+					r.Prs[m.From].Next = m.Hint.XIndex
+				}
+			} else {
+				// follower's log is too short: Next = XLen
+				r.Prs[m.From].Next = m.Hint.XLen
+			}
 			r.sendAppend(m.From)
 			return
 		}
 	}
 	// m.Index store the last index of reqMsg.entries
 	if m.Index != 0 {
-		r.Prs[m.From].Next = m.Index + 1
-		r.Prs[m.From].Match = m.Index
+		if m.Index > r.Prs[m.From].Match {
+			r.Prs[m.From].Next = m.Index + 1
+			r.Prs[m.From].Match = m.Index
+		}
 		r.updateCommitted()
 	}
 }
