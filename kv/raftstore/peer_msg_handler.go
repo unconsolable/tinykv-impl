@@ -67,14 +67,13 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		// In ManyPartitions, the index in proposals may not be consecutive
 		for _, prop := range d.proposals {
 			if ent.Index == prop.index {
-				curProposal = prop
+				// Reject stale callbacks
+				if prop.term < d.Term() {
+					prop.cb.Done(ErrRespStaleCommand(d.Term()))
+				} else {
+					curProposal = prop
+				}
 				break
-			}
-		}
-		// Reject stale callbacks
-		if err := util.CheckTerm(req, d.Term()); err != nil {
-			if curProposal != nil {
-				curProposal.cb.Done(ErrRespStaleCommand(d.Term()))
 			}
 		}
 		header := raft_cmdpb.RaftResponseHeader{
@@ -213,7 +212,7 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	d.proposals = append(d.proposals, &proposal{
 		index: d.nextProposalIndex(),
-		term:  msg.Header.Term,
+		term:  d.Term(),
 		cb:    cb,
 	})
 	d.RaftGroup.Propose(data)
