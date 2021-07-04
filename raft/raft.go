@@ -200,7 +200,7 @@ func newRaft(c *Config) *Raft {
 	// Recover RaftLog
 	ret.RaftLog = newLog(c.Storage)
 	ret.RaftLog.committed = hardState.Commit
-	ret.RaftLog.applied = c.Applied
+	// ret.RaftLog.applied = c.Applied
 	DPrintf("New Raft=%+v\n", *ret.RaftLog)
 	return ret
 }
@@ -210,25 +210,43 @@ func newRaft(c *Config) *Raft {
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	// Calculate prevLogIndex, prevLogTerm
-	prevLogIndex := r.Prs[to].Next - 1
-	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
-	if err != nil {
-		panic(err.Error())
-	}
-	// Fetch corresponding entries[]
-	entries, err := r.RaftLog.Entries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
-	if err != nil {
-		panic(err.Error())
-	}
-	reqMsg := pb.Message{
-		MsgType: pb.MessageType_MsgAppend,
-		To:      to,
-		From:    r.id,
-		Term:    r.Term,
-		LogTerm: prevLogTerm,
-		Index:   prevLogIndex,
-		Entries: entries,
-		Commit:  r.RaftLog.committed,
+	reqMsg := pb.Message{}
+	if r.Prs[to].Next <= r.RaftLog.firstLogIdx {
+		// PrevLog has been compacted, send Snapshot RPC
+		snap, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			// Snapshot is not ready, send heartbeat instead
+			r.sendHeartbeat(to)
+			return true
+		}
+		reqMsg = pb.Message{
+			MsgType:  pb.MessageType_MsgSnapshot,
+			To:       to,
+			From:     r.id,
+			Term:     r.Term,
+			Snapshot: &snap,
+		}
+	} else {
+		prevLogIndex := r.Prs[to].Next - 1
+		prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
+		if err != nil {
+			panic(err.Error())
+		}
+		// Fetch corresponding entries[]
+		entries, err := r.RaftLog.Entries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
+		if err != nil {
+			panic(err.Error())
+		}
+		reqMsg = pb.Message{
+			MsgType: pb.MessageType_MsgAppend,
+			To:      to,
+			From:    r.id,
+			Term:    r.Term,
+			LogTerm: prevLogTerm,
+			Index:   prevLogIndex,
+			Entries: entries,
+			Commit:  r.RaftLog.committed,
+		}
 	}
 	r.msgs = append(r.msgs, reqMsg)
 	DPrintf("%v Send AppendEntries, Msg %+v", r.id, reqMsg)
@@ -372,6 +390,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgRequestVoteResponse:
@@ -397,6 +417,8 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleRequestVoteResp(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgPropose:
@@ -732,6 +754,43 @@ func (r *Raft) updateCommitted() {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	respMsg := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		To:      m.From,
+		From:    m.To,
+		Term:    r.Term,
+		Reject:  false,
+	}
+	defer func(msg *pb.Message) {
+		r.msgs = append(r.msgs, *msg)
+	}(&respMsg)
+	// Reply immediately if term < currentTerm
+	if m.Term < r.Term {
+		respMsg.Reject = true
+		return
+	}
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, m.From)
+	}
+	respMsg.Term = r.Term
+	// Record leader id
+	r.Lead = m.From
+	// Reset election timer
+	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
+	// Save snapshot file, discard any existing or partial snapshot
+	// with a smaller index
+	if r.RaftLog.pendingSnapshot == nil || m.Snapshot.Metadata.Index > r.RaftLog.pendingSnapshot.Metadata.Index {
+		r.RaftLog.pendingSnapshot = m.Snapshot
+	}
+	respMsg.Index = r.RaftLog.pendingSnapshot.Metadata.Index
+	// Reset state machine using snapshot contents
+	r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
+	r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
+	r.RaftLog.maybeCompact()
+	r.Prs = make(map[uint64]*Progress)
+	for _, v := range m.Snapshot.Metadata.ConfState.Nodes {
+		r.Prs[v] = &Progress{}
+	}
 }
 
 // addNode add a new node to raft group

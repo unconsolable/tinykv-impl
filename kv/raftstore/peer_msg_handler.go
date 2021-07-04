@@ -121,6 +121,24 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				curProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			}
 		}
+		if req.AdminRequest != nil {
+			// Execute AdminRequest
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType: req.AdminRequest.CmdType,
+			}
+			switch req.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				// Modify metadata: update RaftTruncatedState
+				resp.AdminResponse.CompactLog = &raft_cmdpb.CompactLogResponse{}
+				d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
+					Index: req.AdminRequest.CompactLog.CompactIndex,
+					Term:  req.AdminRequest.CompactLog.CompactTerm,
+				}
+				// log.Infof("Compact Idx=%v, Term=%v", d.peerStorage.applyState.TruncatedState.Index, d.peerStorage.applyState.TruncatedState.Term)
+				// Schedule a task to raftlog-gc worker
+				d.ScheduleCompactLog(req.AdminRequest.CompactLog.CompactIndex)
+			}
+		}
 		if curProposal != nil {
 			curProposal.cb.Done(&resp)
 		}

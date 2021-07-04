@@ -79,6 +79,7 @@ func newLog(storage Storage) *RaftLog {
 	} else {
 		ret.firstLogTerm = firstLogTerm
 	}
+	ret.applied = ret.firstLogIdx
 	// Fetch previous entries and append
 	prevEntries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
@@ -91,7 +92,6 @@ func newLog(storage Storage) *RaftLog {
 	} else {
 		ret.stabled = stabled
 	}
-	// First log idx and term will be zero before snapshot is introduced
 	return ret
 }
 
@@ -100,6 +100,22 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	// If existing log entry has same index and term as snapshot’s
+	// last included entry, retain log entries following it and reply
+	if len(l.entries) == 0 {
+		return
+	}
+	if l.firstLogIdx >= l.entries[0].Index && l.firstLogIdx <= l.LastIndex() {
+		if term, err := l.Term(l.firstLogIdx); err != nil {
+			panic(err.Error())
+		} else if term == l.firstLogTerm {
+			offset := l.firstLogIdx - l.entries[0].Index
+			l.entries = l.entries[offset+1:]
+			return
+		}
+	}
+	// Discard entire log
+	l.entries = l.entries[:0]
 }
 
 // unstableEntries return all the unstable entries

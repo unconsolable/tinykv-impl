@@ -359,7 +359,44 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	if !ps.validateSnap(snapshot) {
+		return nil, errors.New("Invalidate Snapshot")
+	}
+	ret := &ApplySnapResult{
+		PrevRegion: ps.region,
+	}
+	ps.snapState.StateType = snap.SnapState_Applying
+	// Update peer storage state
+	ps.clearMeta(kvWB, raftWB)
+	ps.raftState = &rspb.RaftLocalState{
+		HardState: ps.raftState.HardState,
+		LastIndex: snapshot.Metadata.Index,
+		LastTerm:  snapshot.Metadata.Term,
+	}
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	ps.applyState = &rspb.RaftApplyState{
+		AppliedIndex: snapshot.Metadata.Index,
+		TruncatedState: &rspb.RaftTruncatedState{
+			Index: snapshot.Metadata.Index,
+			Term:  snapshot.Metadata.Term,
+		},
+	}
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	// send RegionTaskApply
+	finish := make(chan bool)
+	ps.regionSched <- runner.RegionTaskApply{
+		RegionId: snapData.Region.Id,
+		Notifier: finish,
+		SnapMeta: snapshot.Metadata,
+		StartKey: ps.region.StartKey,
+		EndKey:   ps.region.EndKey,
+	}
+	<-finish
+	// Clear extra data
+	ps.region = snapData.Region
+	ps.clearExtraData(ps.region)
+	ret.Region = ps.region
+	return ret, nil
 }
 
 // Save memory states to disk.
@@ -370,6 +407,15 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	raftWB, kvWB := engine_util.WriteBatch{}, engine_util.WriteBatch{}
 	raftWB.Reset()
 	kvWB.Reset()
+	// Apply Snapshot
+	var applyRes *ApplySnapResult = nil
+	if len(ready.Snapshot.Data) != 0 && ready.Snapshot.Metadata != nil {
+		if applySnapResult, err := ps.ApplySnapshot(&ready.Snapshot, &kvWB, &raftWB); err != nil {
+			log.Fatalf("ps.ApplySnapshot err: %v", err)
+		} else {
+			applyRes = applySnapResult
+		}
+	}
 	// Append log entries
 	ents := make([]eraftpb.Entry, len(ready.Entries))
 	copy(ents, ready.Entries)
@@ -397,7 +443,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
 		return nil, err
 	}
-	return nil, nil
+	return applyRes, nil
 }
 
 func (ps *PeerStorage) ClearData() {
