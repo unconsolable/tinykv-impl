@@ -71,6 +71,7 @@ type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
 	prevHardState pb.HardState
+	prevSoftState SoftState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
@@ -112,6 +113,7 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 	if err != nil {
 		return err
 	}
+	rn.Raft.PendingConfIndex = rn.Raft.RaftLog.LastIndex() + 1
 	ent := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Data: data}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -150,7 +152,6 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	// TODO: snapshot (2C)
 	ret := Ready{
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
@@ -164,6 +165,12 @@ func (rn *RawNode) Ready() Ready {
 			Term:   rn.Raft.Term,
 			Vote:   rn.Raft.Vote,
 			Commit: rn.Raft.RaftLog.committed,
+		}
+	}
+	if rn.SoftStateChanged() {
+		ret.SoftState = &SoftState{
+			Lead:      rn.Raft.Lead,
+			RaftState: rn.Raft.State,
 		}
 	}
 	rn.Raft.msgs = rn.Raft.msgs[:0]
@@ -193,6 +200,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	if rd.Commit > rn.prevHardState.Commit {
 		rn.prevHardState.Commit = rd.Commit
+	}
+	if rd.SoftState != nil {
+		rn.prevSoftState = *rd.SoftState
 	}
 	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
@@ -228,4 +238,8 @@ func (rn *RawNode) HardStateChanged() bool {
 		Commit: rn.Raft.RaftLog.committed,
 	}
 	return !isHardStateEqual(rn.prevHardState, newHardState)
+}
+
+func (rn *RawNode) SoftStateChanged() bool {
+	return rn.prevSoftState.Lead != rn.Raft.Lead || rn.prevSoftState.RaftState != rn.Raft.State
 }

@@ -184,13 +184,13 @@ func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
 }
 
 // Log entry append for leader
-func (l *RaftLog) LeaderAppend(data []byte, term uint64) error {
+func (l *RaftLog) LeaderAppend(ent *pb.Entry, term uint64) error {
 	lastIndex := l.LastIndex()
 	l.entries = append(l.entries, pb.Entry{
-		EntryType: pb.EntryType_EntryNormal,
+		EntryType: ent.EntryType,
 		Term:      term,
 		Index:     lastIndex + 1,
-		Data:      data,
+		Data:      ent.Data,
 	})
 	return nil
 }

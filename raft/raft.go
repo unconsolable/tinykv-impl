@@ -286,12 +286,38 @@ func (r *Raft) sendRequestVote(to uint64) {
 	DPrintf("%d send RequestVote to %d\n", r.id, to)
 }
 
+func (r *Raft) sendTimeout(to uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		To:      to,
+		From:    r.id,
+	})
+}
+
+func (r *Raft) sendTransfer(to uint64) {
+	if to == None {
+		log.Printf("Don't know leader")
+	}
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTransferLeader,
+		To:      to,
+		From:    r.id,
+	})
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateLeader:
 		r.heartbeatElapsed++
+		if r.leadTransferee != None {
+			r.electionElapsed++
+			if r.electionElapsed >= r.electionTimeout {
+				// transfer fail, resume operation
+				r.leadTransferee = None
+			}
+		}
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
 			r.heartbeatElapsed = 0
 			r.bcastHeartbeat()
@@ -308,11 +334,12 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
-	// Reset term, leader, election timeout, vote record
+	// Reset term, leader, election timeout, vote record, leaderTransferee
 	r.Term = term
 	r.Lead = lead
 	r.Vote = None
 	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
+	r.leadTransferee = None
 	// Switch state to follower
 	r.State = StateFollower
 	DPrintf("%d become Follower, term %v\n", r.id, r.Term)
@@ -321,10 +348,11 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
-	// Update term, vote to itself, reset election timeout
+	// Update term, vote to itself, reset election timeout, leaderTransferee
 	r.Term++
 	r.Vote = r.id
 	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
+	r.leadTransferee = None
 	// Reset votes
 	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true
@@ -384,6 +412,13 @@ func (r *Raft) stepFollower(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.becomeCandidate()
 		r.campaign()
+	case pb.MessageType_MsgTimeoutNow:
+		// If it has been removed from group, nothing happens
+		if _, ok := r.Prs[r.id]; ok {
+			r.Step(pb.Message{
+				MsgType: pb.MessageType_MsgHup,
+			})
+		}
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgRequestVote:
@@ -392,11 +427,13 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.sendTransfer(r.Lead)
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
-		return nil
+	case pb.MessageType_MsgPropose:
 	default:
 		log.Fatalf("Implement message %v in %v", m.MsgType, r.State.String())
 	}
@@ -409,6 +446,13 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 	case pb.MessageType_MsgHup:
 		r.becomeCandidate()
 		r.campaign()
+	case pb.MessageType_MsgTimeoutNow:
+		// If it has been removed from group, nothing happens
+		if _, ok := r.Prs[r.id]; ok {
+			r.Step(pb.Message{
+				MsgType: pb.MessageType_MsgHup,
+			})
+		}
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgRequestVote:
@@ -419,11 +463,12 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.sendTransfer(r.Lead)
 	case pb.MessageType_MsgBeat:
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgPropose:
 	case pb.MessageType_MsgAppendResponse:
-		return nil
 	default:
 		log.Fatalf("Implement message %v in %v", m.MsgType, r.State.String())
 	}
@@ -447,9 +492,10 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleAppendEntriesResp(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResp(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgHup:
 	case pb.MessageType_MsgRequestVoteResponse:
-		return nil
 	default:
 		log.Fatalf("Implement message %v in %v", m.MsgType, r.State.String())
 	}
@@ -482,9 +528,13 @@ func (r *Raft) campaign() {
 // appendEntry handle MsgPropose message
 func (r *Raft) appendEntry(m pb.Message) {
 	// Your Code Here (2A).
+	if r.leadTransferee != None {
+		// Leader transfer, stop accepting new proposal
+		return
+	}
 	// append entries to log, and update matchIndex
 	for _, entry := range m.Entries {
-		r.RaftLog.LeaderAppend(entry.Data, r.Term)
+		r.RaftLog.LeaderAppend(entry, r.Term)
 		r.Prs[r.id].Match++
 		r.Prs[r.id].Next++
 	}
@@ -677,6 +727,10 @@ func (r *Raft) handleAppendEntriesResp(m pb.Message) {
 			r.Prs[m.From].Next = m.Index + 1
 			r.Prs[m.From].Match = m.Index
 		}
+		if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			// Catch up successful
+			r.sendTimeout(m.From)
+		}
 		r.updateCommitted()
 	}
 }
@@ -724,6 +778,9 @@ func (r *Raft) handleHeartbeatResp(m pb.Message) {
 
 // Update committed for leader
 func (r *Raft) updateCommitted() {
+	if len(r.Prs) == 0 {
+		return
+	}
 	matchIdxs, i := make([]uint64, len(r.Prs)), 0
 	for _, v := range r.Prs {
 		matchIdxs[i] = v.Match
@@ -793,12 +850,54 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	}
 }
 
+// handle LeaderTransfer
+func (r *Raft) handleLeaderTransfer(m pb.Message) {
+	if r.id == m.From {
+		// Transfer leadership back to self when last transfer is pending.
+		if r.leadTransferee != None {
+			r.leadTransferee = None
+		}
+		// Transfer leadership to self, there will be noop
+		return
+	}
+	if _, ok := r.Prs[m.From]; !ok {
+		// Transfer leadership to non-existing node, there will be noop.
+		return
+	}
+	r.leadTransferee = m.From
+	// Check the qualification
+	if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		// Log catch up, send timeout directly
+		r.sendTimeout(m.From)
+		return
+	}
+	// transfer does not complete after about an election timeout
+	// the transfer aborted and resume acception client operation
+	r.electionElapsed = 0
+	r.sendAppend(m.From)
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		// Have been added
+		return
+	}
+	r.Prs[id] = &Progress{
+		Match: 0,
+		Next:  r.RaftLog.LastIndex() + 1,
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		// Have been removed
+		return
+	}
+	delete(r.Prs, id)
+	// Remove node reduces the quorum requirements
+	r.updateCommitted()
 }
