@@ -135,6 +135,7 @@ func (l *RaftLog) nextEnts() []pb.Entry {
 		return nil
 	}
 	offset := l.entries[0].Index
+	// log.Printf("applied=%v, commited=%v, offset=%v\n", l.applied, l.committed, offset)
 	return l.entries[l.applied-offset+1 : l.committed-offset+1]
 }
 

@@ -496,6 +496,7 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleLeaderTransfer(m)
 	case pb.MessageType_MsgHup:
 	case pb.MessageType_MsgRequestVoteResponse:
+	case pb.MessageType_MsgTimeoutNow:
 	default:
 		log.Fatalf("Implement message %v in %v", m.MsgType, r.State.String())
 	}
@@ -534,6 +535,14 @@ func (r *Raft) appendEntry(m pb.Message) {
 	}
 	// append entries to log, and update matchIndex
 	for _, entry := range m.Entries {
+		if entry.EntryType == pb.EntryType_EntryConfChange {
+			if r.PendingConfIndex > r.RaftLog.applied {
+				// Refuse to propose
+				entry.EntryType, entry.Data = pb.EntryType_EntryNormal, nil
+			} else {
+				r.PendingConfIndex = r.RaftLog.LastIndex() + 1
+			}
+		}
 		r.RaftLog.LeaderAppend(entry, r.Term)
 		r.Prs[r.id].Match++
 		r.Prs[r.id].Next++

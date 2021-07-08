@@ -113,7 +113,6 @@ func (rn *RawNode) ProposeConfChange(cc pb.ConfChange) error {
 	if err != nil {
 		return err
 	}
-	rn.Raft.PendingConfIndex = rn.Raft.RaftLog.LastIndex() + 1
 	ent := pb.Entry{EntryType: pb.EntryType_EntryConfChange, Data: data}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
@@ -204,6 +203,11 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.SoftState != nil {
 		rn.prevSoftState = *rd.SoftState
 	}
+	if rd.Snapshot.Metadata != nil && len(rd.Snapshot.Data) != 0 {
+		// Snapshot not empty, maybe reset applied, stabled
+		rn.Raft.RaftLog.applied = rd.Snapshot.Metadata.Index
+		rn.Raft.RaftLog.committed = rd.Snapshot.Metadata.Index
+	}
 	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
@@ -227,6 +231,7 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
+	// log.Infof("Leader transfer to %v, Raft=%+v, Progress:%v", transferee, *rn.Raft, rn.Raft.Prs[transferee])
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
 }
 

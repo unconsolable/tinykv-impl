@@ -364,6 +364,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	ret := &ApplySnapResult{
 		PrevRegion: ps.region,
+		Region:     snapData.Region,
 	}
 	ps.snapState.StateType = snap.SnapState_Applying
 	// Update peer storage state
@@ -384,7 +385,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	// send RegionTaskApply
 	finish := make(chan bool)
-	ps.regionSched <- runner.RegionTaskApply{
+	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: snapData.Region.Id,
 		Notifier: finish,
 		SnapMeta: snapshot.Metadata,
