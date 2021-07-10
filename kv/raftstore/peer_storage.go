@@ -324,23 +324,8 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if first > entries[0].Index {
 		entries = entries[first-entries[0].Index:]
 	}
-	entsFirst := entries[0].Index
-	last, err := ps.LastIndex()
-	if err != nil {
-		panic(err.Error())
-	}
-	switch {
-	case last+1 > entsFirst:
-		for i := entsFirst; i <= last; i++ {
-			raftWB.DeleteMeta(meta.RaftLogKey(ps.region.Id, i))
-		}
-		for i := range entries {
-			raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entries[i].Index), &entries[i])
-		}
-	case last+1 <= entsFirst:
-		for i := range entries {
-			raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entries[i].Index), &entries[i])
-		}
+	for i := range entries {
+		raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entries[i].Index), &entries[i])
 	}
 	ps.raftState.LastIndex = entries[len(entries)-1].Index
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
@@ -433,18 +418,23 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		newRfState.HardState = &ready.HardState
 	}
 	// Store new RaftState
-	raftWB.DeleteMeta(meta.RaftStateKey(ps.region.Id))
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), newRfState)
 	if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
 		return nil, err
 	}
 	ps.raftState = newRfState
-	kvWB.DeleteMeta(meta.ApplyStateKey(ps.region.Id))
-	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
 		return nil, err
 	}
 	return applyRes, nil
+}
+
+func (ps *PeerStorage) SaveApplied() {
+	kvWB := engine_util.WriteBatch{}
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
+		panic(err.Error())
+	}
 }
 
 func (ps *PeerStorage) ClearData() {

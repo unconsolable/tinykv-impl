@@ -49,7 +49,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	rd := d.RaftGroup.Ready()
-	// log.Infof("%v cur Ready %v", d.peer.RaftGroup.Raft.GetId(), rd)
+	// Save Log Entries, RaftLocalState, RaftApplyState, RegionLocalState
+	d.peerStorage.SaveReadyState(&rd)
+	// Send Raft messages
+	d.Send(d.ctx.trans, rd.Messages)
 	// Apply log entries
 	kvApplyWB := engine_util.WriteBatch{}
 	for _, ent := range rd.CommittedEntries {
@@ -57,13 +60,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if ent.Data == nil {
 			continue
 		}
-		req := new(raft_cmdpb.RaftCmdRequest)
-		if err := req.Unmarshal(ent.Data); err != nil {
-			panic(err.Error())
-		}
 		// Find callback, execute request and send response
 		var curProposal *proposal = nil
-		// Find callback
 		// In ManyPartitions, the index in proposals may not be consecutive
 		for _, prop := range d.proposals {
 			if ent.Index == prop.index {
@@ -76,12 +74,12 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				break
 			}
 		}
-		header := raft_cmdpb.RaftResponseHeader{
-			CurrentTerm: d.Term(),
+		req := new(raft_cmdpb.RaftCmdRequest)
+		if err := req.Unmarshal(ent.Data); err != nil {
+			panic(err.Error())
 		}
-		resp := raft_cmdpb.RaftCmdResponse{
-			Header: &header,
-		}
+		resp := newCmdResp()
+		BindRespTerm(resp, d.Term())
 		needTxn, getOpErr := false, false
 		// Set WriteBatch
 		for _, v := range req.Requests {
@@ -109,6 +107,35 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		if getOpErr {
 			continue
 		}
+		if req.AdminRequest != nil {
+			// Execute AdminRequest
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{
+				CmdType: req.AdminRequest.CmdType,
+			}
+			switch req.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				// Modify metadata: update RaftTruncatedState
+				// May solve "no need to gc"
+				if d.peerStorage.applyState.AppliedIndex < req.AdminRequest.CompactLog.CompactIndex {
+					if term, err := d.RaftGroup.Raft.RaftLog.Term(d.peerStorage.applyState.AppliedIndex); err != nil {
+						panic(err.Error())
+					} else {
+						req.AdminRequest.CompactLog.CompactIndex = d.peerStorage.applyState.AppliedIndex
+						req.AdminRequest.CompactLog.CompactTerm = term
+					}
+				}
+				resp.AdminResponse.CompactLog = &raft_cmdpb.CompactLogResponse{}
+				if d.peerStorage.applyState.TruncatedState.Index < req.AdminRequest.CompactLog.CompactIndex {
+					d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
+						Index: req.AdminRequest.CompactLog.CompactIndex,
+						Term:  req.AdminRequest.CompactLog.CompactTerm,
+					}
+					// log.Infof("Compact Idx=%v, Term=%v", d.peerStorage.applyState.TruncatedState.Index, d.peerStorage.applyState.TruncatedState.Term)
+					// Schedule a task to raftlog-gc worker
+					d.ScheduleCompactLog(req.AdminRequest.CompactLog.CompactIndex)
+				}
+			}
+		}
 		// Apply to KvDB, get Txn handler
 		if err := kvApplyWB.WriteToDB(d.peerStorage.Engines.Kv); err != nil {
 			if curProposal != nil {
@@ -121,35 +148,14 @@ func (d *peerMsgHandler) HandleRaftReady() {
 				curProposal.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			}
 		}
-		if req.AdminRequest != nil {
-			// Execute AdminRequest
-			resp.AdminResponse = &raft_cmdpb.AdminResponse{
-				CmdType: req.AdminRequest.CmdType,
-			}
-			switch req.AdminRequest.CmdType {
-			case raft_cmdpb.AdminCmdType_CompactLog:
-				// Modify metadata: update RaftTruncatedState
-				resp.AdminResponse.CompactLog = &raft_cmdpb.CompactLogResponse{}
-				d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
-					Index: req.AdminRequest.CompactLog.CompactIndex,
-					Term:  req.AdminRequest.CompactLog.CompactTerm,
-				}
-				// log.Infof("Compact Idx=%v, Term=%v", d.peerStorage.applyState.TruncatedState.Index, d.peerStorage.applyState.TruncatedState.Term)
-				// Schedule a task to raftlog-gc worker
-				d.ScheduleCompactLog(req.AdminRequest.CompactLog.CompactIndex)
-			}
-		}
 		if curProposal != nil {
-			curProposal.cb.Done(&resp)
+			curProposal.cb.Done(resp)
 		}
 		d.peerStorage.applyState.AppliedIndex = ent.Index
 	}
 	// log.Infof("Apply Ok %v", d.peer.RaftGroup.Raft.GetId())
-	// Save Log Entries, RaftLocalState, RaftApplyState, RegionLocalState
-	d.peerStorage.SaveReadyState(&rd)
-	// log.Infof("Persist Ok %v", d.peer.RaftGroup.Raft.GetId())
-	// Send Raft messages
-	d.Send(d.ctx.trans, rd.Messages)
+	// Update ApplyState
+	d.peerStorage.SaveApplied()
 	// Advance raftFsm
 	d.RaftGroup.Advance(rd)
 	// log.Infof("Send Ok %v", d.peer.RaftGroup.Raft.GetId())
