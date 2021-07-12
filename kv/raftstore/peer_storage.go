@@ -320,10 +320,6 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if entries[0].Index+uint64(len(entries))-1 < first {
 		return nil
 	}
-	// truncate compacted entries
-	if first > entries[0].Index {
-		entries = entries[first-entries[0].Index:]
-	}
 	for i := range entries {
 		raftWB.SetMeta(meta.RaftLogKey(ps.region.Id, entries[i].Index), &entries[i])
 	}
@@ -354,6 +350,9 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.snapState.StateType = snap.SnapState_Applying
 	// Update peer storage state
 	ps.clearMeta(kvWB, raftWB)
+	if ps.raftState.HardState.Commit < snapshot.Metadata.Index {
+		ps.raftState.HardState.Commit = snapshot.Metadata.Index
+	}
 	ps.raftState = &rspb.RaftLocalState{
 		HardState: ps.raftState.HardState,
 		LastIndex: snapshot.Metadata.Index,
@@ -378,10 +377,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		EndKey:   ps.region.EndKey,
 	}
 	<-finish
+	ps.snapState.StateType = snap.SnapState_Relax
 	// Clear extra data
 	ps.region = snapData.Region
 	ps.clearExtraData(ps.region)
-	ret.Region = ps.region
 	return ret, nil
 }
 
@@ -423,6 +422,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		return nil, err
 	}
 	ps.raftState = newRfState
+	// Store new RegionState
+	if applyRes != nil && util.IsEpochStale(applyRes.PrevRegion.RegionEpoch, applyRes.Region.RegionEpoch) {
+		regionLocal := &rspb.RegionLocalState{State: rspb.PeerState_Normal, Region: applyRes.Region}
+		kvWB.SetMeta(meta.RegionStateKey(applyRes.Region.Id), regionLocal)
+	}
 	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
 		return nil, err
 	}
@@ -447,4 +451,9 @@ func (ps *PeerStorage) clearRange(regionID uint64, start, end []byte) {
 		StartKey: start,
 		EndKey:   end,
 	}
+}
+
+func (ps *PeerStorage) SaveRegionLocalState(state *rspb.RegionLocalState, kvWB *engine_util.WriteBatch) {
+	kvWB.SetMeta(meta.RegionStateKey(ps.region.Id), state)
+	kvWB.MustWriteToDB(ps.Engines.Kv)
 }

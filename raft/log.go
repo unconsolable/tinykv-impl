@@ -79,7 +79,6 @@ func newLog(storage Storage) *RaftLog {
 	} else {
 		ret.firstLogTerm = firstLogTerm
 	}
-	ret.applied = ret.firstLogIdx
 	// Fetch previous entries and append
 	prevEntries, err := storage.Entries(firstIndex, lastIndex+1)
 	if err != nil {
@@ -87,11 +86,7 @@ func newLog(storage Storage) *RaftLog {
 	}
 	ret.entries = append(ret.entries, prevEntries...)
 	// Get stabled index
-	if stabled, err := storage.LastIndex(); err != nil {
-		panic(err.Error())
-	} else {
-		ret.stabled = stabled
-	}
+	ret.stabled = lastIndex
 	return ret
 }
 

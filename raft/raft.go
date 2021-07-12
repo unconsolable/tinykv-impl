@@ -200,7 +200,11 @@ func newRaft(c *Config) *Raft {
 	// Recover RaftLog
 	ret.RaftLog = newLog(c.Storage)
 	ret.RaftLog.committed = hardState.Commit
-	// ret.RaftLog.applied = c.Applied
+	if c.Applied != 0 {
+		ret.RaftLog.applied = c.Applied
+	} else {
+		ret.RaftLog.applied = ret.RaftLog.firstLogIdx
+	}
 	DPrintf("New Raft=%+v\n", *ret.RaftLog)
 	return ret
 }
@@ -261,7 +265,6 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		To:      to,
 		From:    r.id,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed,
 	}
 	r.msgs = append(r.msgs, reqMsg)
 	DPrintf("%d send heartbeat, msg: %+v\n", r.id, reqMsg)
@@ -852,6 +855,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	// Reset state machine using snapshot contents
 	r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
 	r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
+	if r.RaftLog.committed < r.RaftLog.pendingSnapshot.Metadata.Index {
+		r.RaftLog.committed = r.RaftLog.pendingSnapshot.Metadata.Index
+	}
 	r.RaftLog.maybeCompact()
 	r.Prs = make(map[uint64]*Progress)
 	for _, v := range m.Snapshot.Metadata.ConfState.Nodes {
@@ -909,4 +915,21 @@ func (r *Raft) removeNode(id uint64) {
 	delete(r.Prs, id)
 	// Remove node reduces the quorum requirements
 	r.updateCommitted()
+}
+
+func (r *Raft) updatePengingConfIdx() {
+	r.PendingConfIndex = 0
+	if len(r.RaftLog.entries) == 0 {
+		return
+	}
+	if ents, err := r.RaftLog.Entries(r.RaftLog.applied+1, r.RaftLog.LastIndex()+1); err != nil {
+		panic(err.Error())
+	} else {
+		for _, ent := range ents {
+			if ent.EntryType == pb.EntryType_EntryConfChange {
+				r.PendingConfIndex = ent.Index
+			}
+		}
+	}
+	log.Printf("r.PendingConfIndex = %v", r.PendingConfIndex)
 }

@@ -206,7 +206,6 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.Snapshot.Metadata != nil && len(rd.Snapshot.Data) != 0 {
 		// Snapshot not empty, maybe reset applied, stabled
 		rn.Raft.RaftLog.applied = rd.Snapshot.Metadata.Index
-		rn.Raft.RaftLog.committed = rd.Snapshot.Metadata.Index
 	}
 	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
