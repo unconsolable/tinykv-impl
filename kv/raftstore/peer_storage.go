@@ -350,15 +350,8 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.snapState.StateType = snap.SnapState_Applying
 	// Update peer storage state
 	ps.clearMeta(kvWB, raftWB)
-	if ps.raftState.HardState.Commit < snapshot.Metadata.Index {
-		ps.raftState.HardState.Commit = snapshot.Metadata.Index
-	}
-	ps.raftState = &rspb.RaftLocalState{
-		HardState: ps.raftState.HardState,
-		LastIndex: snapshot.Metadata.Index,
-		LastTerm:  snapshot.Metadata.Term,
-	}
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	ps.raftState.LastIndex = snapshot.Metadata.Index
+	ps.raftState.LastTerm = snapshot.Metadata.Term
 	ps.applyState = &rspb.RaftApplyState{
 		AppliedIndex: snapshot.Metadata.Index,
 		TruncatedState: &rspb.RaftTruncatedState{
@@ -366,7 +359,6 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 			Term:  snapshot.Metadata.Term,
 		},
 	}
-	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	// send RegionTaskApply
 	finish := make(chan bool)
 	ps.regionSched <- &runner.RegionTaskApply{
@@ -380,6 +372,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.snapState.StateType = snap.SnapState_Relax
 	// Clear extra data
 	ps.region = snapData.Region
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	ps.clearExtraData(ps.region)
 	return ret, nil
 }
@@ -407,29 +400,19 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if err := ps.Append(ents, &raftWB); err != nil {
 		return nil, err
 	}
-	newRfState := &rspb.RaftLocalState{
-		HardState: ps.raftState.HardState,
-		LastIndex: ps.raftState.LastIndex,
-		LastTerm:  ps.raftState.LastTerm,
-	}
 	if !raft.IsEmptyHardState(ready.HardState) {
 		// Set new HardState
-		newRfState.HardState = &ready.HardState
+		ps.raftState.HardState = &ready.HardState
 	}
 	// Store new RaftState
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), newRfState)
-	if err := raftWB.WriteToDB(ps.Engines.Raft); err != nil {
-		return nil, err
-	}
-	ps.raftState = newRfState
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	// Write RaftState, Entry to DB
+	raftWB.MustWriteToDB(ps.Engines.Raft)
 	// Store new RegionState
-	if applyRes != nil && util.IsEpochStale(applyRes.PrevRegion.RegionEpoch, applyRes.Region.RegionEpoch) {
-		regionLocal := &rspb.RegionLocalState{State: rspb.PeerState_Normal, Region: applyRes.Region}
-		kvWB.SetMeta(meta.RegionStateKey(applyRes.Region.Id), regionLocal)
+	if applyRes != nil {
+		meta.WriteRegionState(&kvWB, ps.region, rspb.PeerState_Normal)
 	}
-	if err := kvWB.WriteToDB(ps.Engines.Kv); err != nil {
-		return nil, err
-	}
+	kvWB.MustWriteToDB(ps.Engines.Kv)
 	return applyRes, nil
 }
 

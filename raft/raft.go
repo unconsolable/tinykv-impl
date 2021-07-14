@@ -205,6 +205,7 @@ func newRaft(c *Config) *Raft {
 	} else {
 		ret.RaftLog.applied = ret.RaftLog.firstLogIdx
 	}
+	ret.updatePengingConfIdx()
 	DPrintf("New Raft=%+v\n", *ret.RaftLog)
 	return ret
 }
@@ -319,6 +320,7 @@ func (r *Raft) tick() {
 			if r.electionElapsed >= r.electionTimeout {
 				// transfer fail, resume operation
 				r.leadTransferee = None
+				r.electionElapsed = 0
 			}
 		}
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
@@ -371,6 +373,7 @@ func (r *Raft) becomeLeader() {
 	// Reset heartbeat tick
 	r.heartbeatElapsed = 0
 	// Init progress
+	r.updatePengingConfIdx()
 	for pr := range r.Prs {
 		r.Prs[pr] = &Progress{
 			Match: 0,
@@ -515,7 +518,9 @@ func (r *Raft) campaign() {
 			cnt++
 		}
 	}
-	if cnt*2 > len(r.Prs) {
+	// Ensure len(r.Prs) > 0 to avoid the replicated peer
+	// start the election, vote for itself, become leader, then panic
+	if cnt*2 > len(r.Prs) && len(r.Prs) > 0 {
 		// Win majority
 		r.becomeLeader()
 		return
@@ -642,13 +647,15 @@ func (r *Raft) handleRequestVoteResp(m pb.Message) {
 			nay++
 		}
 	}
+	// Ensure len(r.Prs) > 0 to avoid the replicated peer
+	// start the election, vote for itself, become leader, then panic
+	if len(r.Prs) == 0 || nay*2 > len(r.Prs) {
+		// Lose majority
+		r.becomeFollower(r.Term, None)
+	}
 	if aye*2 > len(r.Prs) {
 		// Win majority
 		r.becomeLeader()
-	}
-	if nay*2 > len(r.Prs) {
-		// Lose majority
-		r.becomeFollower(r.Term, None)
 	}
 }
 
@@ -913,10 +920,15 @@ func (r *Raft) removeNode(id uint64) {
 		return
 	}
 	delete(r.Prs, id)
-	// Remove node reduces the quorum requirements
-	r.updateCommitted()
+	if r.id != id {
+		if r.State == StateLeader {
+			// Remove node reduces the quorum requirements
+			r.updateCommitted()
+		}
+	}
 }
 
+// Avoid more than one conf change
 func (r *Raft) updatePengingConfIdx() {
 	r.PendingConfIndex = 0
 	if len(r.RaftLog.entries) == 0 {

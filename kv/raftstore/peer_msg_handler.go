@@ -54,13 +54,16 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if applyRes, err := d.peerStorage.SaveReadyState(&rd); err != nil {
 		panic(err.Error())
 	} else {
-		if applyRes != nil && util.IsEpochStale(applyRes.PrevRegion.RegionEpoch, applyRes.Region.RegionEpoch) {
+		if applyRes != nil {
 			region := d.Region()
 			d.ctx.storeMeta.Lock()
 			d.ctx.storeMeta.regions[d.regionId] = region
 			d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
 			d.ctx.storeMeta.Unlock()
 			d.peerCache = make(map[uint64]*metapb.Peer)
+			for _, pr := range region.Peers {
+				d.insertPeerCache(pr)
+			}
 		}
 	}
 	// Send Raft messages
@@ -191,7 +194,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			case eraftpb.ConfChangeType_AddNode:
 				newRegion.Peers = append(newRegion.Peers, msg.AdminRequest.ChangePeer.Peer)
 			case eraftpb.ConfChangeType_RemoveNode:
-				util.RemovePeer(newRegion, msg.AdminRequest.ChangePeer.Peer.StoreId)
+				if res := util.RemovePeer(newRegion, msg.AdminRequest.ChangePeer.Peer.StoreId); res == nil {
+					panic("Can't find the store to remove")
+				}
 				d.removePeerCache(cc.NodeId)
 			}
 			// Set region in PeerStorage, GlobalCtx, Response, RegionLocalState
@@ -295,10 +300,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
-	data, err := msg.Marshal()
-	if err != nil {
-		panic(err.Error())
-	}
 	if msg.AdminRequest != nil && msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_TransferLeader {
 		// Transfer leader is an action with no need to replicate
 		if len(msg.Requests) != 0 {
@@ -310,6 +311,19 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		resp.AdminResponse = &raft_cmdpb.AdminResponse{
 			CmdType:        raft_cmdpb.AdminCmdType_TransferLeader,
 			TransferLeader: &raft_cmdpb.TransferLeaderResponse{},
+		}
+		cb.Done(resp)
+		return
+	}
+	if !d.validateChangePeer(msg) {
+		// No need to apply ConfChange
+		resp := newCmdResp()
+		BindRespTerm(resp, d.Term())
+		resp.AdminResponse = &raft_cmdpb.AdminResponse{
+			CmdType: raft_cmdpb.AdminCmdType_ChangePeer,
+			ChangePeer: &raft_cmdpb.ChangePeerResponse{
+				Region: d.Region(),
+			},
 		}
 		cb.Done(resp)
 		return
@@ -329,9 +343,13 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		} else {
 			cc.Context = data
 		}
-		log.Infof("type: %v, node: %v, store: %v", cc.ChangeType, cc.NodeId, msg.AdminRequest.ChangePeer.Peer.StoreId)
+		// log.Infof("type: %v, node: %v, store: %v", cc.ChangeType, cc.NodeId, msg.AdminRequest.ChangePeer.Peer.StoreId)
 		d.RaftGroup.ProposeConfChange(cc)
 	} else {
+		data, err := msg.Marshal()
+		if err != nil {
+			panic(err.Error())
+		}
 		d.RaftGroup.Propose(data)
 	}
 }
@@ -790,4 +808,23 @@ func newCompactLogRequest(regionID uint64, peer *metapb.Peer, compactIndex, comp
 		},
 	}
 	return req
+}
+
+// Return false if ConfChange has applied
+func (d *peerMsgHandler) validateChangePeer(req *raft_cmdpb.RaftCmdRequest) bool {
+	if req.AdminRequest != nil && req.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_ChangePeer {
+		switch req.AdminRequest.ChangePeer.ChangeType {
+		case eraftpb.ConfChangeType_AddNode:
+			// Store to add has added
+			if util.FindPeer(d.Region(), req.AdminRequest.ChangePeer.Peer.StoreId) != nil {
+				return false
+			}
+		case eraftpb.ConfChangeType_RemoveNode:
+			// Store to remove has removed
+			if util.FindPeer(d.Region(), req.AdminRequest.ChangePeer.Peer.StoreId) == nil {
+				return false
+			}
+		}
+	}
+	return true
 }
