@@ -865,7 +865,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	if r.RaftLog.committed < r.RaftLog.pendingSnapshot.Metadata.Index {
 		r.RaftLog.committed = r.RaftLog.pendingSnapshot.Metadata.Index
 	}
-	r.RaftLog.maybeCompact()
+	r.RaftLog.handleEntsAfterSnap()
 	r.Prs = make(map[uint64]*Progress)
 	for _, v := range m.Snapshot.Metadata.ConfState.Nodes {
 		r.Prs[v] = &Progress{}

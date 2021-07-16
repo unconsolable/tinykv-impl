@@ -95,22 +95,20 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
-	// If existing log entry has same index and term as snapshot’s
-	// last included entry, retain log entries following it and reply
-	if len(l.entries) == 0 {
-		return
+	first, err := l.storage.FirstIndex()
+	if err != nil {
+		panic(err.Error())
 	}
-	if l.firstLogIdx >= l.entries[0].Index && l.firstLogIdx <= l.LastIndex() {
-		if term, err := l.Term(l.firstLogIdx); err != nil {
-			panic(err.Error())
-		} else if term == l.firstLogTerm {
-			offset := l.firstLogIdx - l.entries[0].Index
-			l.entries = l.entries[offset+1:]
-			return
-		}
+	first -= 1
+	term, err := l.storage.Term(first)
+	if err != nil {
+		panic(err.Error())
 	}
-	// Discard entire log
-	l.entries = l.entries[:0]
+	if first > l.firstLogIdx {
+		l.entries = l.entries[first-l.firstLogIdx:]
+		l.firstLogIdx = first
+		l.firstLogTerm = term
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -276,4 +274,23 @@ func (l *RaftLog) NonLeaderAppend(m pb.Message) {
 	for _, ent := range m.Entries {
 		l.entries = append(l.entries, *ent)
 	}
+}
+
+func (l *RaftLog) handleEntsAfterSnap() {
+	// If existing log entry has same index and term as snapshot’s
+	// last included entry, retain log entries following it and reply
+	if len(l.entries) == 0 {
+		return
+	}
+	if l.firstLogIdx >= l.entries[0].Index && l.firstLogIdx <= l.LastIndex() {
+		if term, err := l.Term(l.firstLogIdx); err != nil {
+			panic(err.Error())
+		} else if term == l.firstLogTerm {
+			offset := l.firstLogIdx - l.entries[0].Index
+			l.entries = l.entries[offset+1:]
+			return
+		}
+	}
+	// Discard entire log
+	l.entries = l.entries[:0]
 }

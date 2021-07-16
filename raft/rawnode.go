@@ -206,6 +206,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.Snapshot.Metadata != nil && len(rd.Snapshot.Data) != 0 {
 		// Snapshot not empty, maybe reset applied, stabled
 		rn.Raft.RaftLog.applied = rd.Snapshot.Metadata.Index
+		if rn.Raft.RaftLog.stabled < rn.Raft.RaftLog.applied {
+			rn.Raft.RaftLog.stabled = rn.Raft.RaftLog.applied
+		}
 	}
 	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
@@ -214,6 +217,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
 	}
 	rn.Raft.RaftLog.pendingSnapshot = nil
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the the Progress of this node and its peers, if this
