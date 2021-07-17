@@ -220,8 +220,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		// PrevLog has been compacted, send Snapshot RPC
 		snap, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
-			// Snapshot is not ready, send heartbeat instead
-			r.sendHeartbeat(to)
+			// Snapshot is not ready
 			return true
 		}
 		reqMsg = pb.Message{
@@ -696,6 +695,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		respMsg.Reject = rejected
 		if rejected {
 			respMsg.Hint = hint
+			// Pr[to].Next can't be smaller than committed
+			respMsg.Commit = r.RaftLog.committed
 			return
 		}
 	}
@@ -736,6 +737,8 @@ func (r *Raft) handleAppendEntriesResp(m pb.Message) {
 				// follower's log is too short: Next = XLen
 				r.Prs[m.From].Next = m.Hint.XLen
 			}
+			// Pr[to].Next can't be smaller than committed
+			r.Prs[m.From].Next = max(r.Prs[m.From].Next, m.Commit+1)
 			r.sendAppend(m.From)
 			return
 		}
@@ -855,17 +858,20 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.electionElapsed = rand.Intn(r.halfElectionTimeout) + 1
 	// Save snapshot file, discard any existing or partial snapshot
 	// with a smaller index
-	if r.RaftLog.pendingSnapshot == nil || m.Snapshot.Metadata.Index > r.RaftLog.pendingSnapshot.Metadata.Index {
-		r.RaftLog.pendingSnapshot = m.Snapshot
-	}
-	respMsg.Index = r.RaftLog.pendingSnapshot.Metadata.Index
-	// Reset state machine using snapshot contents
-	r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
-	r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
-	if r.RaftLog.committed < r.RaftLog.pendingSnapshot.Metadata.Index {
+	if m.Snapshot.Metadata.Index > r.RaftLog.committed {
+		if r.RaftLog.pendingSnapshot == nil || m.Snapshot.Metadata.Index > r.RaftLog.pendingSnapshot.Metadata.Index {
+			r.RaftLog.pendingSnapshot = m.Snapshot
+		}
+		respMsg.Index = r.RaftLog.pendingSnapshot.Metadata.Index
+		// Reset state machine using snapshot contents
+		r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
+		r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
 		r.RaftLog.committed = r.RaftLog.pendingSnapshot.Metadata.Index
+		r.RaftLog.applied = r.RaftLog.pendingSnapshot.Metadata.Index
+		r.RaftLog.stabled = r.RaftLog.pendingSnapshot.Metadata.Index
+		r.RaftLog.handleEntsAfterSnap()
 	}
-	r.RaftLog.handleEntsAfterSnap()
+	// Load latest config
 	r.Prs = make(map[uint64]*Progress)
 	for _, v := range m.Snapshot.Metadata.ConfState.Nodes {
 		r.Prs[v] = &Progress{}

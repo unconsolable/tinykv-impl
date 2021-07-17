@@ -437,6 +437,6 @@ func (ps *PeerStorage) clearRange(regionID uint64, start, end []byte) {
 }
 
 func (ps *PeerStorage) SaveRegionLocalState(state *rspb.RegionLocalState, kvWB *engine_util.WriteBatch) {
-	kvWB.SetMeta(meta.RegionStateKey(ps.region.Id), state)
+	kvWB.SetMeta(meta.RegionStateKey(state.Region.Id), state)
 	kvWB.MustWriteToDB(ps.Engines.Kv)
 }

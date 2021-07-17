@@ -190,22 +190,6 @@ func (l *RaftLog) LeaderAppend(ent *pb.Entry, term uint64) error {
 }
 
 func (l *RaftLog) NonLeaderCheck(m pb.Message) (bool, error, *pb.AppendRejectHint) {
-	// m.Entries before firstLogIdx, cut to the same
-	if m.Index < l.firstLogIdx {
-		m.Index = l.firstLogIdx
-		m.LogTerm = l.firstLogTerm
-		i := 0
-		for ; i < len(m.Entries); i++ {
-			if m.Entries[i].Index == m.Index {
-				if m.Entries[i].Term != m.LogTerm {
-					panic("m.Entries[i].Term != m.Term")
-				}
-				i++
-				break
-			}
-		}
-		m.Entries = m.Entries[i:]
-	}
 	// Reject and REPLY false if log does not contain an entry
 	// at prevLogIndex whose Term matches prevLogTerm
 	prevIdxTerm, err := l.Term(m.Index)
