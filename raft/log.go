@@ -260,17 +260,17 @@ func (l *RaftLog) NonLeaderAppend(m pb.Message) {
 	}
 }
 
-func (l *RaftLog) handleEntsAfterSnap() {
+func (l *RaftLog) handleEntsAfterSnap(index uint64, term uint64) {
 	// If existing log entry has same index and term as snapshot’s
 	// last included entry, retain log entries following it and reply
 	if len(l.entries) == 0 {
 		return
 	}
-	if l.firstLogIdx >= l.entries[0].Index && l.firstLogIdx <= l.LastIndex() {
-		if term, err := l.Term(l.firstLogIdx); err != nil {
+	if index >= l.entries[0].Index && index <= l.LastIndex() {
+		if logTerm, err := l.Term(index); err != nil {
 			panic(err.Error())
-		} else if term == l.firstLogTerm {
-			offset := l.firstLogIdx - l.entries[0].Index
+		} else if term == logTerm {
+			offset := index - l.entries[0].Index
 			l.entries = l.entries[offset+1:]
 			return
 		}

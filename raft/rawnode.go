@@ -203,13 +203,13 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.SoftState != nil {
 		rn.prevSoftState = *rd.SoftState
 	}
-	if rd.Snapshot.Metadata != nil && len(rd.Snapshot.Data) != 0 {
-		// Snapshot not empty, maybe reset applied, stabled
-		rn.Raft.RaftLog.applied = rd.Snapshot.Metadata.Index
-		if rn.Raft.RaftLog.stabled < rn.Raft.RaftLog.applied {
-			rn.Raft.RaftLog.stabled = rn.Raft.RaftLog.applied
-		}
-	}
+	// if rd.Snapshot.Metadata != nil && len(rd.Snapshot.Data) != 0 {
+	// 	// Snapshot not empty, maybe reset applied, stabled
+	// 	rn.Raft.RaftLog.applied = rd.Snapshot.Metadata.Index
+	// 	if rn.Raft.RaftLog.stabled < rn.Raft.RaftLog.applied {
+	// 		rn.Raft.RaftLog.stabled = rn.Raft.RaftLog.applied
+	// 	}
+	// }
 	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}

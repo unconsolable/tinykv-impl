@@ -9,4 +9,10 @@ go test -count=1 -v -run ^TestConfChangeUnreliable3B$ github.com/pingcap-incubat
 go test -count=1 -v -run ^TestConfChangeUnreliableRecover3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
 go test -count=1 -v -run ^TestConfChangeSnapshotUnreliableRecover3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
 go test -count=1 -v -run ^TestConfChangeSnapshotUnreliableRecoverConcurrentPartition3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestOneSplit3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestSplitRecover3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestSplitRecoverManyClients3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestSplitUnreliable3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestSplitUnreliableRecover3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
+go test -count=1 -v -run ^TestSplitConfChangeSnapshotUnreliableRecover3B$ github.com/pingcap-incubator/tinykv/kv/test_raftstore
 done

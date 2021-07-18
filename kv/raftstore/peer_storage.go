@@ -361,12 +361,15 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 	// send RegionTaskApply
 	finish := make(chan bool)
+	// Send the StartKey and EndKey of the snapData
+	// instead of previous region, otherwise it
+	// may clean up more data outside the region
 	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: snapData.Region.Id,
 		Notifier: finish,
 		SnapMeta: snapshot.Metadata,
-		StartKey: ps.region.StartKey,
-		EndKey:   ps.region.EndKey,
+		StartKey: snapData.Region.StartKey,
+		EndKey:   snapData.Region.EndKey,
 	}
 	<-finish
 	ps.snapState.StateType = snap.SnapState_Relax

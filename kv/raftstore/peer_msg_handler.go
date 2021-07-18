@@ -107,7 +107,6 @@ func (d *peerMsgHandler) HandleEntryNormal(curProposal *proposal, ent eraftpb.En
 				for i, v := range req.AdminRequest.Split.NewPeerIds {
 					secondRegion.Peers[i].Id = v
 				}
-				log.Infof("first %+v, second %+v", *firstRegion, *secondRegion)
 				// Set region in PeerStorage, GlobalCtx, Response, RegionLocalState
 				d.SetRegion(firstRegion)
 				d.ctx.storeMeta.Lock()

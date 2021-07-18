@@ -819,10 +819,7 @@ func (r *Raft) updateCommitted() {
 	}
 	// ...a majority of matchIndex[i] >= N, and log[N].term == currentTerm:
 	// set commitIndex = N, then return true
-	if newCommitted <= r.RaftLog.firstLogIdx {
-		r.RaftLog.committed = newCommitted
-		r.bcastAppend()
-	} else if term, err := r.RaftLog.Term(newCommitted); err != nil {
+	if term, err := r.RaftLog.Term(newCommitted); err != nil {
 		panic(err.Error())
 	} else if term == r.Term {
 		r.RaftLog.committed = newCommitted
@@ -839,6 +836,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		From:    m.To,
 		Term:    r.Term,
 		Reject:  false,
+		Index:   m.Snapshot.Metadata.Index,
 	}
 	defer func(msg *pb.Message) {
 		r.msgs = append(r.msgs, *msg)
@@ -848,7 +846,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		respMsg.Reject = true
 		return
 	}
-	if m.Term > r.Term {
+	if m.Term > r.Term || r.State == StateCandidate {
 		r.becomeFollower(m.Term, m.From)
 	}
 	respMsg.Term = r.Term
@@ -862,14 +860,13 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		if r.RaftLog.pendingSnapshot == nil || m.Snapshot.Metadata.Index > r.RaftLog.pendingSnapshot.Metadata.Index {
 			r.RaftLog.pendingSnapshot = m.Snapshot
 		}
-		respMsg.Index = r.RaftLog.pendingSnapshot.Metadata.Index
 		// Reset state machine using snapshot contents
-		r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
-		r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
 		r.RaftLog.committed = r.RaftLog.pendingSnapshot.Metadata.Index
 		r.RaftLog.applied = r.RaftLog.pendingSnapshot.Metadata.Index
 		r.RaftLog.stabled = r.RaftLog.pendingSnapshot.Metadata.Index
-		r.RaftLog.handleEntsAfterSnap()
+		r.RaftLog.handleEntsAfterSnap(r.RaftLog.pendingSnapshot.Metadata.Index, r.RaftLog.pendingSnapshot.Metadata.Term)
+		r.RaftLog.firstLogIdx = r.RaftLog.pendingSnapshot.Metadata.Index
+		r.RaftLog.firstLogTerm = r.RaftLog.pendingSnapshot.Metadata.Term
 	}
 	// Load latest config
 	r.Prs = make(map[uint64]*Progress)
@@ -949,5 +946,5 @@ func (r *Raft) updatePengingConfIdx() {
 			}
 		}
 	}
-	log.Printf("r.PendingConfIndex = %v", r.PendingConfIndex)
+	// log.Printf("r.PendingConfIndex = %v", r.PendingConfIndex)
 }
