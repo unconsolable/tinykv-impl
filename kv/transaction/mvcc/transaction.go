@@ -60,6 +60,9 @@ func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
+	if val == nil {
+		return nil, nil
+	}
 	lk, err := ParseLock(val)
 	if err != nil {
 		return nil, err
@@ -97,7 +100,11 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	// Find most recent committed record
 	iterWrite := txn.Reader.IterCF(engine_util.CfWrite)
 	iterWrite.Seek(EncodeKey(key, txn.StartTS))
+	defer iterWrite.Close()
 	if !iterWrite.Valid() {
+		return nil, nil
+	}
+	if !bytes.Equal(key, DecodeUserKey(iterWrite.Item().Key())) {
 		return nil, nil
 	}
 	val, err := iterWrite.Item().Value()
@@ -108,7 +115,7 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if write.Kind == WriteKindDelete {
+	if write.Kind != WriteKindPut {
 		return nil, nil
 	}
 	// Get corresponding value
@@ -117,6 +124,7 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	}
 	iter := txn.Reader.IterCF(engine_util.CfDefault)
 	iter.Seek(EncodeKey(key, write.StartTS))
+	defer iter.Close()
 	if iter.Valid() {
 		val, err := iter.Item().Value()
 		if err != nil {
@@ -156,6 +164,7 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
 	endKey := EncodeKey(key, txn.StartTS)
 	for iter.Seek(EncodeKey(key, TsMax)); iter.Valid(); iter.Next() {
 		key := iter.Item().Key()
@@ -185,6 +194,7 @@ func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
 	iter.Seek(EncodeKey(key, TsMax))
+	defer iter.Close()
 	if iter.Valid() {
 		encodedKey := iter.Item().Key()
 		if !bytes.Equal(key, DecodeUserKey(encodedKey)) {
