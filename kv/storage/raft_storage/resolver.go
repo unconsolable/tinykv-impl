@@ -25,6 +25,7 @@ type storeAddr struct {
 	lastUpdate time.Time
 }
 
+// resolverRunner resolve storeID into the address of the TinyKV node
 type resolverRunner struct {
 	schedulerClient scheduler_client.Client
 	storeAddrs      map[uint64]storeAddr
@@ -48,6 +49,7 @@ func (r *resolverRunner) getAddr(id uint64) (string, error) {
 			return sa.addr, nil
 		}
 	}
+	// Get store info from id via scheduler
 	store, err := r.schedulerClient.GetStore(context.TODO(), id)
 	if err != nil {
 		return "", err

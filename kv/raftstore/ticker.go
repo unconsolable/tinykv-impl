@@ -101,6 +101,7 @@ func (r *tickDriver) run() {
 	for {
 		select {
 		case <-timer:
+			// Send tick message to all regions
 			for regionID := range r.regions {
 				if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeTick, regionID, nil)) != nil {
 					delete(r.regions, regionID)
@@ -120,6 +121,7 @@ func (r *tickDriver) stop() {
 	close(r.newRegionCh)
 }
 
+// tickStore advance storeTicker and check schedule
 func (r *tickDriver) tickStore() {
 	r.storeTicker.tickClock()
 	for i := range r.storeTicker.schedules {

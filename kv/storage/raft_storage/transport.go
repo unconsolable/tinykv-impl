@@ -9,9 +9,13 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 )
 
+// ServerTransport wraps client & router, provide transport
 type ServerTransport struct {
-	raftClient        *RaftClient
-	raftRouter        message.RaftRouter
+	// client for send out to other store
+	raftClient *RaftClient
+	// router for dispatch to different regions of the store
+	raftRouter message.RaftRouter
+	// send task to worker
 	resolverScheduler chan<- worker.Task
 	snapScheduler     chan<- worker.Task
 	resolving         sync.Map
@@ -26,15 +30,18 @@ func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- worker.Task
 	}
 }
 
+// Send message out to other store
 func (t *ServerTransport) Send(msg *raft_serverpb.RaftMessage) error {
 	storeID := msg.GetToPeer().GetStoreId()
 	t.SendStore(storeID, msg)
 	return nil
 }
 
+// SendStore send message to corresponding store
 func (t *ServerTransport) SendStore(storeID uint64, msg *raft_serverpb.RaftMessage) {
 	addr := t.raftClient.GetAddr(storeID)
 	if addr != "" {
+		// Find address, send data
 		t.WriteData(storeID, addr, msg)
 		return
 	}
@@ -47,6 +54,7 @@ func (t *ServerTransport) SendStore(storeID uint64, msg *raft_serverpb.RaftMessa
 	t.Resolve(storeID, msg)
 }
 
+// Resolve send task to resolveWorker, to get address of the store
 func (t *ServerTransport) Resolve(storeID uint64, msg *raft_serverpb.RaftMessage) {
 	callback := func(addr string, err error) {
 		// clear resolving
@@ -65,6 +73,7 @@ func (t *ServerTransport) Resolve(storeID uint64, msg *raft_serverpb.RaftMessage
 	}
 }
 
+// WriteData send snapshot first and return if any, otherwise send via raftClient
 func (t *ServerTransport) WriteData(storeID uint64, addr string, msg *raft_serverpb.RaftMessage) {
 	if msg.GetMessage().GetSnapshot() != nil {
 		t.SendSnapshotSock(addr, msg)

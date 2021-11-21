@@ -19,8 +19,10 @@ type peerState struct {
 
 // router routes a message to a peer.
 type router struct {
-	peers       sync.Map // regionID -> peerState
-	peerSender  chan message.Msg
+	peers sync.Map // regionID -> peerState
+	// message deliver to raft worker
+	peerSender chan message.Msg
+	// message deliver to store worker
 	storeSender chan<- message.Msg
 }
 
@@ -32,6 +34,7 @@ func newRouter(storeSender chan<- message.Msg) *router {
 	return pm
 }
 
+// get find the peerState by regionID
 func (pr *router) get(regionID uint64) *peerState {
 	v, ok := pr.peers.Load(regionID)
 	if ok {
@@ -40,6 +43,7 @@ func (pr *router) get(regionID uint64) *peerState {
 	return nil
 }
 
+// register add the peer to peers
 func (pr *router) register(peer *peer) {
 	id := peer.regionId
 	newPeer := &peerState{
@@ -48,6 +52,7 @@ func (pr *router) register(peer *peer) {
 	pr.peers.Store(id, newPeer)
 }
 
+// close load the peerState, set it as closed
 func (pr *router) close(regionID uint64) {
 	v, ok := pr.peers.Load(regionID)
 	if ok {
@@ -57,6 +62,7 @@ func (pr *router) close(regionID uint64) {
 	}
 }
 
+// send deliver the msg to raft worker
 func (pr *router) send(regionID uint64, msg message.Msg) error {
 	msg.RegionID = regionID
 	p := pr.get(regionID)
@@ -67,12 +73,14 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	return nil
 }
 
+// sendStore deliver the msg to store worker
 func (pr *router) sendStore(msg message.Msg) {
 	pr.storeSender <- msg
 }
 
 var errPeerNotFound = errors.New("peer not found")
 
+// RaftstoreRouter is a wrapper of router
 type RaftstoreRouter struct {
 	router *router
 }
@@ -87,6 +95,7 @@ func (r *RaftstoreRouter) Send(regionID uint64, msg message.Msg) error {
 
 func (r *RaftstoreRouter) SendRaftMessage(msg *raft_serverpb.RaftMessage) error {
 	regionID := msg.RegionId
+	// If send to raft worker failed, consult store worker
 	if r.router.send(regionID, message.NewPeerMsg(message.MsgTypeRaftMessage, regionID, msg)) != nil {
 		r.router.sendStore(message.NewPeerMsg(message.MsgTypeStoreRaftMessage, regionID, msg))
 	}

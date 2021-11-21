@@ -43,6 +43,7 @@ func newSnapRunner(snapManager *snap.SnapManager, config *config.Config, router 
 	}
 }
 
+// Handle dispatch to different function via type of task
 func (r *snapRunner) Handle(t worker.Task) {
 	switch t.(type) {
 	case *sendSnapTask:
@@ -58,6 +59,7 @@ func (r *snapRunner) send(t *sendSnapTask) {
 
 const snapChunkLen = 1024 * 1024
 
+// sendSnap get snapshot, open new client, transmit snapshot to receiver
 func (r *snapRunner) sendSnap(addr string, msg *raft_serverpb.RaftMessage) error {
 	start := time.Now()
 	msgSnap := msg.GetMessage().GetSnapshot()

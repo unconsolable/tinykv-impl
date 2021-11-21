@@ -7,6 +7,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 )
 
+// RegionReader wraps a db txn handler and only allow it to read in the region.
 type RegionReader struct {
 	txn    *badger.Txn
 	region *metapb.Region

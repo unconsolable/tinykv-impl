@@ -75,6 +75,8 @@ func NewRaftStorage(conf *config.Config) *RaftStorage {
 	return &RaftStorage{engines: engines, config: conf}
 }
 
+// Write construct a batch of modify (put/delete) to raft command,
+// send to raft layer and wait response.
 func (rs *RaftStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
 	var reqs []*raft_cmdpb.Request
 	for _, m := range batch {
@@ -117,6 +119,8 @@ func (rs *RaftStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error
 	return rs.checkResponse(cb.WaitResp(), len(reqs))
 }
 
+// Reader construct raft command to get
+// the Txn handler and region information and generate region reader
 func (rs *RaftStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
 	header := &raft_cmdpb.RaftRequestHeader{
 		RegionId:    ctx.RegionId,
@@ -152,6 +156,8 @@ func (rs *RaftStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, erro
 	return NewRegionReader(cb.Txn, *resp.Responses[0].GetSnap().Region), nil
 }
 
+// Raft receive raft message from gRPC stream
+// send to RaftRouter, route to different region
 func (rs *RaftStorage) Raft(stream tinykvpb.TinyKv_RaftServer) error {
 	for {
 		msg, err := stream.Recv()

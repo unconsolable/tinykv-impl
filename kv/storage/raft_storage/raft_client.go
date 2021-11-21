@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 )
 
+// raftConn represent a gRPC connection to other store.
 type raftConn struct {
 	streamMu sync.Mutex
 	stream   tinykvpb.TinyKv_RaftClient
@@ -20,6 +21,7 @@ type raftConn struct {
 	cancel   context.CancelFunc
 }
 
+// newRaftConn construct a new connection to other store.
 func newRaftConn(addr string, cfg *config.Config) (*raftConn, error) {
 	cc, err := grpc.Dial(addr, grpc.WithInsecure(),
 		grpc.WithInitialWindowSize(2*1024*1024),
@@ -48,16 +50,20 @@ func (c *raftConn) Stop() {
 	c.cancel()
 }
 
+// Send send Raft Message to other NODE
 func (c *raftConn) Send(msg *raft_serverpb.RaftMessage) error {
 	c.streamMu.Lock()
 	defer c.streamMu.Unlock()
 	return c.stream.Send(msg)
 }
 
+// RaftClient manage connection to other store, it is
+// responsible for sending RaftMessage
 type RaftClient struct {
 	config *config.Config
 	sync.RWMutex
 	conns map[string]*raftConn
+	// storeID -> addr
 	addrs map[uint64]string
 }
 
@@ -69,6 +75,7 @@ func newRaftClient(config *config.Config) *RaftClient {
 	}
 }
 
+// getConn get a connection or construct a new connection to other NODE
 func (c *RaftClient) getConn(addr string, regionID uint64) (*raftConn, error) {
 	c.RLock()
 	conn, ok := c.conns[addr]

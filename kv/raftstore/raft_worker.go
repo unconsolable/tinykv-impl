@@ -59,6 +59,7 @@ func (rw *raftWorker) run(closeCh <-chan struct{}, wg *sync.WaitGroup) {
 	}
 }
 
+// get peerState info from its cache, if failed, consult router and add to cache
 func (rw *raftWorker) getPeerState(peersMap map[uint64]*peerState, regionID uint64) *peerState {
 	peer, ok := peersMap[regionID]
 	if !ok {
